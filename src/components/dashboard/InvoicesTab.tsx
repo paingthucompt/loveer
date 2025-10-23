@@ -1,59 +1,15 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { invoicesApi, transactionsApi } from "@/lib/api";
+import type { Invoice, Transaction } from "@/lib/types";
 import { FileText, Download } from "lucide-react";
 import { format } from "date-fns";
 import jsPDF from "jspdf";
-
-interface BankAccount {
-  bank_name: string;
-  account_number: string;
-}
-
-interface Invoice {
-  id: string;
-  invoice_number: string;
-  total_amount: number;
-  commission_amount: number;
-  net_amount: number;
-  created_at: string;
-  clients: {
-    name: string;
-    phone: string | null;
-    bank_account: BankAccount[] | null;
-    commission_percentage: number;
-    preferred_payout_currency: string;
-  };
-  transactions: {
-    incoming_amount_thb: number;
-    fees: number;
-    transaction_date: string;
-    exchange_rate_mmk: number;
-    payout_currency: string;
-    payout_amount: number;
-  };
-}
-
-interface Transaction {
-  id: string;
-  incoming_amount_thb: number;
-  fees: number;
-  transaction_date: string;
-  exchange_rate_mmk: number;
-  payout_currency: string;
-  payout_amount: number;
-  clients: {
-    id: string;
-    name: string;
-    commission_percentage: number;
-    preferred_payout_currency: string;
-  };
-}
 
 const InvoicesTab = () => {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -70,45 +26,18 @@ const InvoicesTab = () => {
 
   const fetchData = async () => {
     try {
-      const [invoicesResult, allTransactionsResult] = await Promise.all([
-        supabase
-          .from("invoices")
-          .select(`
-            *,
-            clients (name, phone, bank_account, commission_percentage, preferred_payout_currency),
-            transactions (incoming_amount_thb, fees, transaction_date, exchange_rate_mmk, payout_currency, payout_amount)
-          `)
-          .order("created_at", { ascending: false }),
-        supabase
-          .from("transactions")
-          .select(`
-            id,
-            incoming_amount_thb,
-            fees,
-            transaction_date,
-            exchange_rate_mmk,
-            payout_currency,
-            payout_amount,
-            clients (id, name, commission_percentage, preferred_payout_currency)
-          `),
+      const [invoicesData, availableTransactions] = await Promise.all([
+        invoicesApi.list(),
+        transactionsApi.listAvailable()
       ]);
 
-      if (invoicesResult.error) throw invoicesResult.error;
-      if (allTransactionsResult.error) throw allTransactionsResult.error;
-
-      const invoicesData = (invoicesResult.data || []) as unknown as Invoice[];
-      const allTransactions = allTransactionsResult.data || [];
-      
-      // Filter out transactions that already have invoices
-      const invoicedTransactionIds = new Set(invoicesData.map(inv => (inv as any).transaction_id));
-      const availableTransactions = allTransactions.filter(t => !invoicedTransactionIds.has(t.id));
-
-      setInvoices(invoicesData);
-      setTransactions(availableTransactions);
-    } catch (error: any) {
+      setInvoices((invoicesData || []) as Invoice[]);
+      setTransactions((availableTransactions || []) as Transaction[]);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to load invoices";
       toast({
         title: "Error",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -121,33 +50,14 @@ const InvoicesTab = () => {
 
     setLoading(true);
     try {
-      const transaction = transactions.find((t) => t.id === selectedTransaction);
-      if (!transaction) throw new Error("Transaction not found");
-
-      const commissionAmount = (transaction.incoming_amount_thb * transaction.clients.commission_percentage) / 100;
-      const netAmount = transaction.incoming_amount_thb - commissionAmount - transaction.fees;
-
-      const { data: invoiceNumber } = await supabase.rpc("generate_invoice_number");
-
-      const { error } = await supabase.from("invoices").insert([
-        {
-          client_id: transaction.clients.id,
-          transaction_id: transaction.id,
-          invoice_number: invoiceNumber,
-          total_amount: transaction.incoming_amount_thb,
-          commission_amount: commissionAmount,
-          net_amount: netAmount,
-        },
-      ]);
-
-      if (error) throw error;
-
+      await invoicesApi.create({ transaction_id: selectedTransaction });
       toast({ title: "Success", description: "Invoice generated successfully" });
       setOpen(false);
       setSelectedTransaction("");
       fetchData();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to generate invoice";
+      toast({ title: "Error", description: message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -155,6 +65,12 @@ const InvoicesTab = () => {
 
   const downloadPDF = (invoice: Invoice) => {
     const doc = new jsPDF();
+    const totalAmount = Number(invoice.total_amount ?? 0);
+    const commissionAmount = Number(invoice.commission_amount ?? 0);
+    const feesAmount = Number(invoice.transactions.fees ?? 0);
+    const exchangeRate = Number(invoice.transactions.exchange_rate_mmk ?? 0);
+    const netAmount = Number(invoice.net_amount ?? 0);
+    const payoutAmount = Number(invoice.transactions.payout_amount ?? 0);
     
     // Colors
     const primaryColor: [number, number, number] = [99, 102, 241]; // Indigo
@@ -232,8 +148,8 @@ const InvoicesTab = () => {
     doc.text(`Transaction Date: ${format(new Date(invoice.transactions.transaction_date), "MMMM dd, yyyy")}`, 20, yPos);
     
     yPos += 6;
-    if (invoice.transactions.exchange_rate_mmk > 0) {
-      doc.text(`Exchange Rate: 1 THB = ${invoice.transactions.exchange_rate_mmk.toFixed(2)} MMK`, 20, yPos);
+    if (exchangeRate > 0) {
+      doc.text(`Exchange Rate: 1 THB = ${exchangeRate.toFixed(2)} MMK`, 20, yPos);
       yPos += 6;
     }
     doc.text(`Payout Currency: ${invoice.transactions.payout_currency}`, 20, yPos);
@@ -258,31 +174,31 @@ const InvoicesTab = () => {
     doc.setFont("helvetica", "normal");
     doc.setTextColor(...textColor);
     doc.text("Incoming Amount (THB)", 20, yPos);
-    doc.text(invoice.total_amount.toFixed(2), 170, yPos, { align: "right" });
+    doc.text(totalAmount.toFixed(2), 170, yPos, { align: "right" });
     
     yPos += 7;
     doc.setTextColor(...mutedColor);
     doc.text(`Commission (${invoice.clients.commission_percentage}%)`, 20, yPos);
     doc.setTextColor(220, 38, 38); // Red for deductions
-    doc.text(`-${invoice.commission_amount.toFixed(2)}`, 170, yPos, { align: "right" });
+    doc.text(`-${commissionAmount.toFixed(2)}`, 170, yPos, { align: "right" });
     
     yPos += 7;
     doc.setTextColor(...mutedColor);
     doc.text("Processing Fees", 20, yPos);
     doc.setTextColor(220, 38, 38);
-    doc.text(`-${invoice.transactions.fees.toFixed(2)}`, 170, yPos, { align: "right" });
+    doc.text(`-${feesAmount.toFixed(2)}`, 170, yPos, { align: "right" });
     
     yPos += 7;
     doc.setTextColor(...mutedColor);
     doc.text("Net in THB", 20, yPos);
     doc.setTextColor(...textColor);
-    doc.text(invoice.net_amount.toFixed(2), 170, yPos, { align: "right" });
+    doc.text(netAmount.toFixed(2), 170, yPos, { align: "right" });
     
     // Currency conversion if applicable
-    if (invoice.transactions.payout_currency === "MMK" && invoice.transactions.exchange_rate_mmk > 0) {
+    if (invoice.transactions.payout_currency === "MMK" && exchangeRate > 0) {
       yPos += 7;
       doc.setTextColor(...mutedColor);
-      doc.text(`Conversion Rate (1 THB = ${invoice.transactions.exchange_rate_mmk.toFixed(2)} MMK)`, 20, yPos);
+      doc.text(`Conversion Rate (1 THB = ${exchangeRate.toFixed(2)} MMK)`, 20, yPos);
     }
     
     // Total
@@ -297,9 +213,9 @@ const InvoicesTab = () => {
     doc.setFont("helvetica", "bold");
     doc.text("PAYOUT AMOUNT", 20, yPos);
     doc.setTextColor(...accentColor);
-    const payoutDisplay = invoice.transactions.payout_currency === "MMK" 
-      ? `${invoice.transactions.payout_amount.toFixed(2)} MMK`
-      : `฿${invoice.transactions.payout_amount.toFixed(2)}`;
+    const payoutDisplay = invoice.transactions.payout_currency === "MMK"
+      ? `${payoutAmount.toFixed(2)} MMK`
+      : `฿${payoutAmount.toFixed(2)}`;
     doc.text(payoutDisplay, 170, yPos, { align: "right" });
     
     // Company Footer
@@ -380,12 +296,12 @@ const InvoicesTab = () => {
                       <TableCell className="font-mono">{invoice.invoice_number}</TableCell>
                       <TableCell className="font-medium">{invoice.clients.name}</TableCell>
                       <TableCell>{format(new Date(invoice.created_at), "MMM dd, yyyy")}</TableCell>
-                      <TableCell>${invoice.total_amount.toFixed(2)}</TableCell>
+                      <TableCell>${Number(invoice.total_amount ?? 0).toFixed(2)}</TableCell>
                       <TableCell className="text-destructive">
-                        -${invoice.commission_amount.toFixed(2)}
+                        -${Number(invoice.commission_amount ?? 0).toFixed(2)}
                       </TableCell>
                       <TableCell className="font-semibold text-primary">
-                        ${invoice.net_amount.toFixed(2)}
+                        ${Number(invoice.net_amount ?? 0).toFixed(2)}
                       </TableCell>
                       <TableCell className="text-right">
                         <Button
@@ -426,7 +342,7 @@ const InvoicesTab = () => {
                   <SelectContent>
                     {transactions.map((transaction) => (
                       <SelectItem key={transaction.id} value={transaction.id}>
-                        {transaction.clients.name} - ฿{transaction.incoming_amount_thb.toFixed(2)} (
+                        {transaction.clients.name} - ฿{Number(transaction.incoming_amount_thb ?? 0).toFixed(2)} (
                         {format(new Date(transaction.transaction_date), "MMM dd, yyyy")})
                       </SelectItem>
                     ))}
@@ -488,30 +404,30 @@ const InvoicesTab = () => {
                 <div className="border-t pt-4 space-y-2">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Incoming Amount (THB)</span>
-                    <span className="font-medium">฿{previewInvoice.total_amount.toFixed(2)}</span>
+                    <span className="font-medium">฿{Number(previewInvoice.total_amount ?? 0).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">
                       Commission ({previewInvoice.clients.commission_percentage}%)
                     </span>
                     <span className="font-medium text-destructive">
-                      -฿{previewInvoice.commission_amount.toFixed(2)}
+                      -฿{Number(previewInvoice.commission_amount ?? 0).toFixed(2)}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Fees</span>
                     <span className="font-medium text-destructive">
-                      -฿{previewInvoice.transactions.fees.toFixed(2)}
+                      -฿{Number(previewInvoice.transactions.fees ?? 0).toFixed(2)}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Net (THB)</span>
-                    <span className="font-medium">฿{previewInvoice.net_amount.toFixed(2)}</span>
+                    <span className="font-medium">฿{Number(previewInvoice.net_amount ?? 0).toFixed(2)}</span>
                   </div>
-                  {previewInvoice.transactions.payout_currency === "MMK" && previewInvoice.transactions.exchange_rate_mmk > 0 && (
+                  {previewInvoice.transactions.payout_currency === "MMK" && Number(previewInvoice.transactions.exchange_rate_mmk ?? 0) > 0 && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground text-sm">
-                        Exchange Rate: 1 THB = {previewInvoice.transactions.exchange_rate_mmk.toFixed(2)} MMK
+                        Exchange Rate: 1 THB = {Number(previewInvoice.transactions.exchange_rate_mmk ?? 0).toFixed(2)} MMK
                       </span>
                     </div>
                   )}
@@ -519,8 +435,8 @@ const InvoicesTab = () => {
                     <span className="text-lg font-bold">Payout Amount</span>
                     <span className="text-lg font-bold text-primary">
                       {previewInvoice.transactions.payout_currency === "MMK" 
-                        ? `${previewInvoice.transactions.payout_amount.toFixed(2)} MMK`
-                        : `฿${previewInvoice.transactions.payout_amount.toFixed(2)}`}
+                        ? `${Number(previewInvoice.transactions.payout_amount ?? 0).toFixed(2)} MMK`
+                        : `฿${Number(previewInvoice.transactions.payout_amount ?? 0).toFixed(2)}`}
                     </span>
                   </div>
                 </div>

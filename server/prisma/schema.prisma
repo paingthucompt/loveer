@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  clients      Client[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Client {
+  id                       String        @id @default(cuid())
+  userId                   String
+  user                     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                     String
+  phone                    String?
+  bankAccounts             Json?
+  commissionPercentage     Decimal       @default(0)
+  preferredPayoutCurrency  String        @default("THB")
+  transactions             Transaction[]
+  invoices                 Invoice[]
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+}
+
+model Transaction {
+  id                 String     @id @default(cuid())
+  clientId           String
+  client             Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  incomingAmountThb  Decimal
+  fees               Decimal    @default(0)
+  exchangeRateMmk    Decimal    @default(0)
+  payoutCurrency     String     @default("THB")
+  payoutAmount       Decimal?
+  transactionDate    DateTime   @default(now())
+  notes              String?
+  invoices           Invoice[]
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+}
+
+model Invoice {
+  id               String      @id @default(cuid())
+  clientId         String
+  client           Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  transactionId    String
+  transaction      Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  invoiceNumber    String      @unique
+  totalAmount      Decimal
+  commissionAmount Decimal
+  netAmount        Decimal
+  createdAt        DateTime    @default(now())
+}

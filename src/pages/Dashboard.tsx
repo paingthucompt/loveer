@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { authApi } from "@/lib/api";
 import { LogOut, Users, Receipt, FileText } from "lucide-react";
 import ClientsTab from "@/components/dashboard/ClientsTab";
 import TransactionsTab from "@/components/dashboard/TransactionsTab";
@@ -16,26 +16,18 @@ const Dashboard = () => {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        navigate("/auth");
-      } else {
+      try {
+        await authApi.me();
         setLoading(false);
+      } catch {
+        navigate("/auth");
       }
     };
     checkAuth();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!session) {
-        navigate("/auth");
-      }
-    });
-
-    return () => subscription.unsubscribe();
   }, [navigate]);
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    authApi.logout();
     toast({
       title: "Signed out",
       description: "You have been signed out successfully.",

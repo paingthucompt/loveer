@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,32 +7,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, DollarSign } from "lucide-react";
+import { clientsApi, transactionsApi } from "@/lib/api";
+import type { Client, Transaction } from "@/lib/types";
+import { Plus } from "lucide-react";
 import { format } from "date-fns";
-
-interface Transaction {
-  id: string;
-  client_id: string;
-  incoming_amount_thb: number;
-  fees: number;
-  transaction_date: string;
-  notes: string | null;
-  exchange_rate_mmk: number;
-  payout_currency: string;
-  payout_amount: number;
-  clients: {
-    name: string;
-    commission_percentage: number;
-    preferred_payout_currency: string;
-  };
-}
-
-interface Client {
-  id: string;
-  name: string;
-  commission_percentage: number;
-  preferred_payout_currency: string;
-}
 
 const TransactionsTab = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -56,26 +33,18 @@ const TransactionsTab = () => {
 
   const fetchData = async () => {
     try {
-      const [transactionsResult, clientsResult] = await Promise.all([
-        supabase
-          .from("transactions")
-          .select(`
-            *,
-            clients (name, commission_percentage, preferred_payout_currency)
-          `)
-          .order("transaction_date", { ascending: false }),
-        supabase.from("clients").select("id, name, commission_percentage, preferred_payout_currency"),
+      const [transactionsData, clientsData] = await Promise.all([
+        transactionsApi.list(),
+        clientsApi.list()
       ]);
 
-      if (transactionsResult.error) throw transactionsResult.error;
-      if (clientsResult.error) throw clientsResult.error;
-
-      setTransactions(transactionsResult.data || []);
-      setClients(clientsResult.data || []);
-    } catch (error: any) {
+      setTransactions((transactionsData || []) as Transaction[]);
+      setClients((clientsData || []) as Client[]);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to load transactions";
       toast({
         title: "Error",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -88,34 +57,16 @@ const TransactionsTab = () => {
     setLoading(true);
 
     try {
-      const client = clients.find(c => c.id === formData.client_id);
-      if (!client) throw new Error("Client not found");
-
-      const incomingAmountThb = parseFloat(formData.incoming_amount_thb);
-      const fees = parseFloat(formData.fees || "0");
-      const exchangeRateMmk = parseFloat(formData.exchange_rate_mmk || "0");
-      
-      // Calculate commission and net
-      const commissionAmountThb = (incomingAmountThb * client.commission_percentage) / 100;
-      const netPayableThb = incomingAmountThb - commissionAmountThb - fees;
-      
-      // Calculate payout based on currency
-      const payoutCurrency = client.preferred_payout_currency;
-      const payoutAmount = payoutCurrency === "MMK" ? netPayableThb * exchangeRateMmk : netPayableThb;
-
       const transactionData = {
         client_id: formData.client_id,
-        incoming_amount_thb: incomingAmountThb,
-        fees: fees,
-        exchange_rate_mmk: exchangeRateMmk,
-        payout_currency: payoutCurrency,
-        payout_amount: payoutAmount,
+        incoming_amount_thb: parseFloat(formData.incoming_amount_thb),
+        fees: parseFloat(formData.fees || "0"),
+        exchange_rate_mmk: parseFloat(formData.exchange_rate_mmk || "0"),
         transaction_date: formData.transaction_date,
         notes: formData.notes || null,
       };
 
-      const { error } = await supabase.from("transactions").insert([transactionData]);
-      if (error) throw error;
+      await transactionsApi.create(transactionData);
 
       toast({ title: "Success", description: "Transaction added successfully" });
       setOpen(false);
@@ -128,8 +79,9 @@ const TransactionsTab = () => {
         notes: "",
       });
       fetchData();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to save transaction";
+      toast({ title: "Error", description: message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -267,17 +219,17 @@ const TransactionsTab = () => {
                     <TableRow key={transaction.id}>
                       <TableCell>{format(new Date(transaction.transaction_date), "MMM dd, yyyy")}</TableCell>
                       <TableCell className="font-medium">{transaction.clients.name}</TableCell>
-                      <TableCell>฿{transaction.incoming_amount_thb.toFixed(2)}</TableCell>
+                      <TableCell>฿{Number(transaction.incoming_amount_thb).toFixed(2)}</TableCell>
                       <TableCell>
-                        {transaction.exchange_rate_mmk > 0 
-                          ? `1:${transaction.exchange_rate_mmk.toFixed(2)}` 
+                        {transaction.exchange_rate_mmk > 0
+                          ? `1:${Number(transaction.exchange_rate_mmk).toFixed(2)}`
                           : "—"}
                       </TableCell>
-                      <TableCell>฿{transaction.fees.toFixed(2)}</TableCell>
+                      <TableCell>฿{Number(transaction.fees).toFixed(2)}</TableCell>
                       <TableCell className="font-semibold text-primary">
-                        {transaction.payout_currency === "MMK" 
-                          ? `${transaction.payout_amount.toFixed(2)} MMK`
-                          : `฿${transaction.payout_amount.toFixed(2)}`}
+                        {transaction.payout_currency === "MMK"
+                          ? `${Number(transaction.payout_amount ?? 0).toFixed(2)} MMK`
+                          : `฿${Number(transaction.payout_amount ?? 0).toFixed(2)}`}
                       </TableCell>
                     </TableRow>
                   ))

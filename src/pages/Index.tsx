@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { authApi } from "@/lib/api";
 import { FileText, Users, Receipt, TrendingUp } from "lucide-react";
 
 const Index = () => {
@@ -8,10 +9,11 @@ const Index = () => {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const { supabase } = await import("@/integrations/supabase/client");
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
+      try {
+        await authApi.me();
         navigate("/dashboard");
+      } catch {
+        // user not authenticated
       }
     };
     checkAuth();

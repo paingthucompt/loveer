@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,21 +7,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { clientsApi } from "@/lib/api";
+import type { BankAccount, Client } from "@/lib/types";
 import { Plus, Pencil, Trash2, X } from "lucide-react";
-
-interface BankAccount {
-  bank_name: string;
-  account_number: string;
-}
-
-interface Client {
-  id: string;
-  name: string;
-  phone: string | null;
-  bank_account: BankAccount[] | null;
-  commission_percentage: number;
-  preferred_payout_currency: string;
-}
 
 const ClientsTab = () => {
   const [clients, setClients] = useState<Client[]>([]);
@@ -36,7 +23,7 @@ const ClientsTab = () => {
     preferred_payout_currency: "THB",
   });
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
-  const [newBank, setNewBank] = useState({ bank_name: "", account_number: "" });
+  const [newBank, setNewBank] = useState<BankAccount>({ bank_name: "", account_number: "" });
   const { toast } = useToast();
 
   useEffect(() => {
@@ -45,17 +32,13 @@ const ClientsTab = () => {
 
   const fetchClients = async () => {
     try {
-      const { data, error } = await supabase
-        .from("clients")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      setClients((data || []) as unknown as Client[]);
-    } catch (error: any) {
+      const data = await clientsApi.list();
+      setClients((data || []) as Client[]);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to load clients";
       toast({
         title: "Error",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -68,28 +51,19 @@ const ClientsTab = () => {
     setLoading(true);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not authenticated");
-
       const clientData = {
         name: formData.name,
         phone: formData.phone || null,
-        bank_account: bankAccounts.length > 0 ? (bankAccounts as any) : null,
+        bank_account: bankAccounts.length > 0 ? bankAccounts : [],
         commission_percentage: parseFloat(formData.commission_percentage),
         preferred_payout_currency: formData.preferred_payout_currency,
-        user_id: user.id,
       };
 
       if (editingClient) {
-        const { error } = await supabase
-          .from("clients")
-          .update(clientData)
-          .eq("id", editingClient.id);
-        if (error) throw error;
+        await clientsApi.update(editingClient.id, clientData);
         toast({ title: "Success", description: "Client updated successfully" });
       } else {
-        const { error } = await supabase.from("clients").insert([clientData]);
-        if (error) throw error;
+        await clientsApi.create(clientData);
         toast({ title: "Success", description: "Client added successfully" });
       }
 
@@ -99,8 +73,9 @@ const ClientsTab = () => {
       setBankAccounts([]);
       setNewBank({ bank_name: "", account_number: "" });
       fetchClients();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to save client";
+      toast({ title: "Error", description: message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -133,12 +108,12 @@ const ClientsTab = () => {
     if (!confirm("Are you sure you want to delete this client?")) return;
 
     try {
-      const { error } = await supabase.from("clients").delete().eq("id", id);
-      if (error) throw error;
+      await clientsApi.remove(id);
       toast({ title: "Success", description: "Client deleted successfully" });
       fetchClients();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to delete client";
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
 

@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { authApi } from "@/lib/api";
 import { FileText } from "lucide-react";
 
 const Auth = () => {
@@ -18,9 +18,11 @@ const Auth = () => {
 
   useEffect(() => {
     const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
+      try {
+        await authApi.me();
         navigate("/dashboard");
+      } catch {
+        // user not authenticated
       }
     };
     checkUser();
@@ -32,30 +34,21 @@ const Auth = () => {
 
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo: `${window.location.origin}/dashboard`
-          }
-        });
-        if (error) throw error;
+        await authApi.register({ email, password });
         toast({
           title: "Success!",
-          description: "Account created successfully. You can now sign in.",
+          description: "Account created successfully.",
         });
+        navigate("/dashboard");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
+        await authApi.login({ email, password });
         navigate("/dashboard");
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Something went wrong";
       toast({
         title: "Error",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
